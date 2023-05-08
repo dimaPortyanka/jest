@@ -1,27 +1,26 @@
--- TODO: remove extmark when test pass
--- iterate over all tests and check if they are passing
--- remove extmark "failed test" if now they pass
--- add to diagnostic failed tests
--- nvim_buf_del_extmark
 local ns = vim.api.nvim_create_namespace("jest")
 
 local parse_test_output = function(data)
-	local failed_tests_names = {}
+	local test_results = {}
+
 	for _, v in pairs(data) do
 		local obj = vim.json.decode(v)
 		if obj then
 			for _, test_result in pairs(obj.testResults) do
 				for _, assert_res in pairs(test_result.assertionResults)  do
-					print(vim.inspect(assert_res))
-					if assert_res.status == 'failed' then
-						table.insert(failed_tests_names, assert_res.fullName)
-					end
+					table.insert(
+						test_results,
+						{
+							status = assert_res.status,
+							fullName = assert_res.fullName
+						}
+					)
 				end
 			end
 		end
 	end
 
-	return failed_tests_names
+	return test_results
 end
 
 local get_function_calls = function()
@@ -60,6 +59,7 @@ local get_function_calls = function()
 	return function_calls
 end
 
+local extra_marks = {}
 
 vim.api.nvim_create_autocmd({"BufWritePost", "BufRead"}, {
 	pattern="*",
@@ -70,19 +70,33 @@ vim.api.nvim_create_autocmd({"BufWritePost", "BufRead"}, {
 		local filename = vim.fn.expand('%:t')
 		local relative_path = vim.fn.fnamemodify(path .. '/' .. filename, ':.')
 
+		for _, extra_mark_id in ipairs(extra_marks) do
+			vim.api.nvim_buf_del_extmark(0, ns, extra_mark_id)
+		end
+
 		vim.fn.jobstart(
 			'npx jest --json ' .. relative_path,
 			{
 				on_stdout = function(_, data)
 					pcall(function ()
-						local failed_tests_names = parse_test_output(data)
+						local test_results = parse_test_output(data)
 
-						for _, failed_test_name in ipairs(failed_tests_names) do
-							local text = {"failed test", "error"}
+						for _, test_result in ipairs(test_results) do
+							local text
+							if test_result.status == 'passed' then
+								text = {"passed test", "info"}
+							elseif test_result.status == 'failed' then
+								print('failed'..' '..test_result.fullName)
+								text = {"failed test", "error"}
+							end
 
-							vim.api.nvim_buf_set_extmark(0, ns, calls[failed_test_name], 0, {
-								virt_text = { text }
-							})
+							table.insert(
+								extra_marks,
+								vim.api.nvim_buf_set_extmark(0, ns, calls[test_result.fullName], 0, {
+									virt_text = { text }
+								})
+							)
+
 						end
 					end)
 				end,
