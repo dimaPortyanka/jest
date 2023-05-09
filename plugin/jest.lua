@@ -1,6 +1,6 @@
 local ns = vim.api.nvim_create_namespace("jest")
 
-local parse_test_output = function(data)
+local function parse_test_output(data)
 	local test_results = {}
 
 	for _, v in pairs(data) do
@@ -12,7 +12,7 @@ local parse_test_output = function(data)
 						test_results,
 						{
 							status = assert_res.status,
-							fullName = assert_res.fullName
+							title = assert_res.title
 						}
 					)
 				end
@@ -23,7 +23,27 @@ local parse_test_output = function(data)
 	return test_results
 end
 
-local get_function_calls = function()
+local function get_test_names_lines(ast_node, hash_test_name_line)
+	if ast_node.kind ~= vim.lsp.protocol.SymbolKind.Function then
+		return
+	end
+
+	local name = ast_node.name
+	local line = ast_node.range.start.line
+
+	local pattern = '^test%([\'\"](.+)[\'\"]%) callback'
+	local test_name = string.match(name, pattern)
+	if test_name ~= nil then
+		hash_test_name_line[test_name] = line
+		return
+	end
+
+	for _, child in ipairs(ast_node.children) do
+		get_test_names_lines(child, hash_test_name_line)
+	end
+end
+
+local function get_function_calls()
 	local uri = vim.uri_from_bufnr(0)
 	local request = {
 		textDocument = { uri = uri }
@@ -35,24 +55,11 @@ local get_function_calls = function()
 
 	local response = vim.lsp.buf_request_sync(0, 'textDocument/documentSymbol', request)
 
-	-- Extract function calls from the response
-	if response == nil then
-		return
-	end
-
 	local function_calls = {}
-	for _, symbol in ipairs(response[1].result) do
-		if symbol.kind == vim.lsp.protocol.SymbolKind.Function then
-			local name = symbol.name
-			local line = symbol.range.start.line
 
-			-- pattern matches extracting text inside e.g test('text to extract') callback
-			local pattern = '^test%([\'\"](.+)[\'\"]%) callback'
-			local test_name = string.match(name, pattern)
-
-			if test_name ~= nil then
-				function_calls[test_name] = line
-			end
+	for _, single_response in ipairs(response) do
+		for _, child in ipairs(single_response.result) do
+			get_test_names_lines(child, function_calls)
 		end
 	end
 
@@ -61,8 +68,17 @@ end
 
 local extra_marks = {}
 
-vim.api.nvim_create_autocmd({"BufWritePost", "BufRead"}, {
-	pattern="*",
+vim.api.nvim_create_autocmd({"BufWritePost", "BufEnter"}, {
+	pattern = {
+		'*.spec.tsx',
+		'*.test.tsx',
+		'*.test.jsx',
+		'*.spec.jsx',
+		'*.test.js',
+		'*.test.ts',
+		'*.spec.ts',
+		'*.spec.js'
+	},
 	callback = function ()
 		local calls = get_function_calls()
 
@@ -77,7 +93,7 @@ vim.api.nvim_create_autocmd({"BufWritePost", "BufRead"}, {
 		vim.fn.jobstart(
 			'npx jest --json ' .. relative_path,
 			{
-				on_stdout = function(_, data)
+			on_stdout = function(_, data)
 					pcall(function ()
 						local test_results = parse_test_output(data)
 
@@ -86,13 +102,12 @@ vim.api.nvim_create_autocmd({"BufWritePost", "BufRead"}, {
 							if test_result.status == 'passed' then
 								text = {"passed test", "info"}
 							elseif test_result.status == 'failed' then
-								print('failed'..' '..test_result.fullName)
 								text = {"failed test", "error"}
 							end
 
 							table.insert(
 								extra_marks,
-								vim.api.nvim_buf_set_extmark(0, ns, calls[test_result.fullName], 0, {
+								vim.api.nvim_buf_set_extmark(0, ns, calls[test_result.title], 0, {
 									virt_text = { text }
 								})
 							)
